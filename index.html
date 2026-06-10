@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>MesaTalk — Intercomunicador</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --merchant-bg: #1B2A4A;
+    --merchant-accent: #4A90D9;
+    --merchant-text: #E8F0FB;
+    --customer-bg: #E8624A;
+    --customer-accent: #FFD166;
+    --customer-text: #FFF8F0;
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    font-family: 'Inter', sans-serif;
+    background: #0A0A0A;
+  }
+
+  /* Banner height var so layout can compensate */
+  :root { --banner-h: 0px; }
+  body.banner-visible { --banner-h: 40px; }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    /* Subtract banner height so panels never overflow */
+    height: calc(100vh - var(--banner-h));
+    width: 100vw;
+    margin-top: var(--banner-h);
+    gap: 4px;
+  }
+
+  .panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px 16px;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .panel-merchant { background: var(--merchant-bg); }
+  .panel-customer { background: var(--customer-bg); transform: rotate(180deg); }
+
+  /* HEADER */
+  .panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .role-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding-top: 5px;
+  }
+  .panel-merchant .role-label { color: rgba(232,240,251,0.5); }
+  .panel-customer .role-label { color: rgba(255,248,240,0.5); }
+
+  .lang-selector {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .lang-btn {
+    border: none;
+    border-radius: 20px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.18s;
+    font-family: 'Inter', sans-serif;
+    line-height: 1.6;
+    /* Store lang code as data attr — no more fragile string parsing */
+  }
+
+  .panel-merchant .lang-btn { background: rgba(255,255,255,0.09); color: var(--merchant-text); }
+  .panel-merchant .lang-btn.active { background: var(--merchant-accent); color: #fff; }
+  .panel-customer .lang-btn { background: rgba(0,0,0,0.15); color: var(--customer-text); }
+  .panel-customer .lang-btn.active { background: var(--customer-accent); color: #1B2A4A; }
+
+  /* TEXT AREA */
+  .text-area {
+    width: 100%;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 0 4px;
+    min-height: 0;
+    justify-content: center;
+  }
+
+  .box {
+    width: 100%;
+    border-radius: 12px;
+    padding: 10px 14px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .box-transcript { background: rgba(0,0,0,0.18); }
+  .box-translation { background: rgba(255,255,255,0.11); }
+  .panel-customer .box-translation { background: rgba(0,0,0,0.12); }
+
+  .box-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.45;
+    flex-shrink: 0;
+  }
+  .panel-merchant .box-label { color: var(--merchant-text); }
+  .panel-customer .box-label { color: var(--customer-text); }
+
+  .box-text {
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.4;
+    flex: 1;
+    word-break: break-word;
+  }
+  .box-text.big { font-size: 18px; font-weight: 700; }
+  .panel-merchant .box-text { color: var(--merchant-text); }
+  .panel-customer .box-text { color: var(--customer-text); }
+
+  /* STATUS */
+  .status {
+    font-size: 11px;
+    font-weight: 600;
+    height: 16px;
+    transition: opacity 0.3s;
+    opacity: 0;
+    flex-shrink: 0;
+  }
+  .status.show { opacity: 1; }
+  .panel-merchant .status { color: var(--merchant-accent); }
+  .panel-customer .status { color: var(--customer-accent); }
+
+  /* MIC BUTTON */
+  .mic-btn {
+    width: 82px; height: 82px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 3px;
+    font-family: 'Inter', sans-serif;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    transition: transform 0.12s, box-shadow 0.12s;
+    box-shadow: 0 6px 28px rgba(0,0,0,0.35);
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    flex-shrink: 0;
+    /* Prevent iOS long-press callout */
+    -webkit-touch-callout: none;
+  }
+  .panel-merchant .mic-btn { background: var(--merchant-accent); color: #fff; }
+  .panel-customer .mic-btn {
+    background: rgba(0,0,0,0.22);
+    color: var(--customer-text);
+    border: 2.5px solid rgba(255,255,255,0.35);
+  }
+  .mic-btn:active { transform: scale(0.93); }
+
+  .mic-btn.listening { animation: pulse 1.1s ease-out infinite; }
+  .panel-merchant .mic-btn.listening { background: #d94f32; }
+  .panel-customer .mic-btn.listening { border-color: var(--customer-accent); background: rgba(0,0,0,0.35); }
+
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(217,79,50,0.55), 0 6px 28px rgba(0,0,0,0.35); }
+    70%  { box-shadow: 0 0 0 20px rgba(217,79,50,0), 0 6px 28px rgba(0,0,0,0.35); }
+    100% { box-shadow: 0 0 0 0 rgba(217,79,50,0), 0 6px 28px rgba(0,0,0,0.35); }
+  }
+
+  .mic-icon { font-size: 25px; line-height: 1; pointer-events: none; }
+  .mic-label { pointer-events: none; }
+
+  /* DIVIDER */
+  #divider {
+    height: 4px;
+    background: #0A0A0A;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  #divider-logo {
+    background: #0A0A0A;
+    padding: 2px 14px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+    color: rgba(255,255,255,0.25);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  /* DOTS LOADER */
+  .dots { display: inline-flex; gap: 3px; align-items: center; height: 20px; }
+  .dots span {
+    width: 5px; height: 5px; border-radius: 50%;
+    animation: db 0.9s infinite;
+    display: inline-block;
+  }
+  .panel-merchant .dots span { background: var(--merchant-accent); }
+  .panel-customer .dots span { background: var(--customer-accent); }
+  .dots span:nth-child(2) { animation-delay: 0.15s; }
+  .dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes db {
+    0%,80%,100% { transform: translateY(0); opacity: 0.35; }
+    40% { transform: translateY(-5px); opacity: 1; }
+  }
+
+  /* PERMISSION BANNER */
+  #perm-banner {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 200;
+    height: 40px;
+    background: #c0392b;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    /* Hidden by default; shown via JS if needed */
+    display: none;
+  }
+
+  /* BADGE */
+  #free-badge {
+    position: fixed;
+    bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.45);
+    color: rgba(255,255,255,0.28);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 2px 10px;
+    border-radius: 8px 8px 0 0;
+    pointer-events: none;
+    z-index: 50;
+  }
+</style>
+</head>
+<body>
+
+<div id="perm-banner">🎙️ TAP AQUÍ para activar el micrófono</div>
+
+<div id="app">
+
+  <!-- COMERCIANTE -->
+  <div class="panel panel-merchant">
+    <div class="panel-header">
+      <div class="role-label">🏪 Comerciante</div>
+      <div class="lang-selector" id="lm">
+        <button class="lang-btn active" data-lang="es" data-speech="es-ES">🇪🇸 ES</button>
+        <button class="lang-btn" data-lang="en" data-speech="en-US">🇺🇸 EN</button>
+        <button class="lang-btn" data-lang="fr" data-speech="fr-FR">🇫🇷 FR</button>
+        <button class="lang-btn" data-lang="de" data-speech="de-DE">🇩🇪 DE</button>
+        <button class="lang-btn" data-lang="it" data-speech="it-IT">🇮🇹 IT</button>
+        <button class="lang-btn" data-lang="pt" data-speech="pt-BR">🇧🇷 PT</button>
+        <button class="lang-btn" data-lang="zh" data-speech="zh-CN">🇨🇳 ZH</button>
+        <button class="lang-btn" data-lang="ja" data-speech="ja-JP">🇯🇵 JA</button>
+      </div>
+    </div>
+
+    <div class="text-area">
+      <div class="box box-transcript">
+        <div class="box-label">Lo que dijiste</div>
+        <div class="box-text" id="tr-m">—</div>
+      </div>
+      <div class="box box-translation">
+        <div class="box-label">Traducción recibida</div>
+        <div class="box-text big" id="tl-m">—</div>
+      </div>
+    </div>
+
+    <div class="status" id="st-m"></div>
+
+    <button class="mic-btn" id="mic-m">
+      <span class="mic-icon">🎙️</span>
+      <span class="mic-label">HABLAR</span>
+    </button>
+  </div>
+
+  <!-- DIVISOR -->
+  <div id="divider">
+    <div id="divider-logo">⇅ MESATALK ⇅</div>
+  </div>
+
+  <!-- CLIENTE -->
+  <div class="panel panel-customer">
+    <div class="panel-header">
+      <div class="role-label">🙋 Customer / Cliente</div>
+      <div class="lang-selector" id="lc">
+        <button class="lang-btn" data-lang="es" data-speech="es-ES">🇪🇸 ES</button>
+        <button class="lang-btn active" data-lang="en" data-speech="en-US">🇺🇸 EN</button>
+        <button class="lang-btn" data-lang="fr" data-speech="fr-FR">🇫🇷 FR</button>
+        <button class="lang-btn" data-lang="de" data-speech="de-DE">🇩🇪 DE</button>
+        <button class="lang-btn" data-lang="it" data-speech="it-IT">🇮🇹 IT</button>
+        <button class="lang-btn" data-lang="pt" data-speech="pt-BR">🇧🇷 PT</button>
+        <button class="lang-btn" data-lang="zh" data-speech="zh-CN">🇨🇳 ZH</button>
+        <button class="lang-btn" data-lang="ja" data-speech="ja-JP">🇯🇵 JA</button>
+      </div>
+    </div>
+
+    <div class="text-area">
+      <div class="box box-transcript">
+        <div class="box-label">What you said</div>
+        <div class="box-text" id="tr-c">—</div>
+      </div>
+      <div class="box box-translation">
+        <div class="box-label">Translation received</div>
+        <div class="box-text big" id="tl-c">—</div>
+      </div>
+    </div>
+
+    <div class="status" id="st-c"></div>
+
+    <button class="mic-btn" id="mic-c">
+      <span class="mic-icon">🎙️</span>
+      <span class="mic-label">SPEAK</span>
+    </button>
+  </div>
+
+</div>
+
+<div id="free-badge">100% GRATIS · MYMEMORY API</div>
+
+<script>
+'use strict';
+
+// ── State ────────────────────────────────────────────────
+const state = {
+  m: { lang: 'es', speechLang: 'es-ES' },
+  c: { lang: 'en', speechLang: 'en-US' }
+};
+
+let recognition  = null;
+let active       = null;   // 'm' | 'c' | null
+let capturedText = '';     // final text captured this session
+let micGranted   = false;
+let voicesLoaded = false;
+
+// ── Voice preload (fixes iOS TTS silence bug) ─────────────
+function preloadVoices() {
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length) { voicesLoaded = true; return; }
+  window.speechSynthesis.onvoiceschanged = () => { voicesLoaded = true; };
+}
+if (window.speechSynthesis) preloadVoices();
+
+// ── Permission banner ────────────────────────────────────
+const banner = document.getElementById('perm-banner');
+
+function showBanner() {
+  banner.style.display = 'flex';
+  document.body.classList.add('banner-visible');
+}
+function hideBanner() {
+  banner.style.display = 'none';
+  document.body.classList.remove('banner-visible');
+}
+
+async function requestMicPermission() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(t => t.stop());
+    micGranted = true;
+    hideBanner();
+  } catch (err) {
+    banner.textContent = '⚠ Permiso denegado — actívalo en Ajustes del navegador';
+  }
+}
+banner.addEventListener('click', requestMicPermission);
+
+// Check permission state on load (no prompt, just query)
+(async () => {
+  if (!navigator.mediaDevices) { showBanner(); return; }
+  try {
+    // 'query' doesn't trigger a prompt
+    if (navigator.permissions) {
+      const result = await navigator.permissions.query({ name: 'microphone' });
+      if (result.state === 'granted') {
+        micGranted = true;
+        // banner stays hidden (default)
+      } else {
+        showBanner(); // 'prompt' or 'denied' → show banner
+      }
+      result.onchange = () => {
+        if (result.state === 'granted') { micGranted = true; hideBanner(); }
+        else showBanner();
+      };
+    } else {
+      // Fallback: try silently
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      micGranted = true;
+    }
+  } catch { showBanner(); }
+})();
+
+// ── Language buttons (data-attr based, no string parsing) ─
+function initLangButtons(panelId, panel) {
+  document.querySelectorAll(`#${panelId} .lang-btn`).forEach(btn => {
+    btn.addEventListener('click', () => {
+      state[panel].lang       = btn.dataset.lang;
+      state[panel].speechLang = btn.dataset.speech;
+      document.querySelectorAll(`#${panelId} .lang-btn`).forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+}
+initLangButtons('lm', 'm');
+initLangButtons('lc', 'c');
+
+// ── Status helper ────────────────────────────────────────
+function setStatus(panel, msg, visible) {
+  const el = document.getElementById(`st-${panel}`);
+  el.textContent = msg;
+  el.classList.toggle('show', visible);
+}
+
+// ── Mic button attachment ────────────────────────────────
+// Fix: single usingTouch flag per button (not shared), reset on touchend/touchcancel
+function attachBtn(btnId, panel) {
+  const btn = document.getElementById(btnId);
+  let isTouchActive = false;
+
+  btn.addEventListener('touchstart', e => {
+    e.preventDefault();           // suppress ghost mouse events
+    isTouchActive = true;
+    startSpeech(panel);
+  }, { passive: false });
+
+  const onTouchEnd = e => {
+    e.preventDefault();
+    isTouchActive = false;
+    stopSpeech(panel);
+  };
+  btn.addEventListener('touchend',    onTouchEnd, { passive: false });
+  btn.addEventListener('touchcancel', onTouchEnd, { passive: false }); // FIX: handle cancel (calls, notifications)
+
+  btn.addEventListener('mousedown', () => { if (!isTouchActive) startSpeech(panel); });
+  btn.addEventListener('mouseup',   () => { if (!isTouchActive) stopSpeech(panel); });
+  btn.addEventListener('mouseleave',() => { if (!isTouchActive && active === panel) stopSpeech(panel); });
+}
+
+// ── Speech recognition ───────────────────────────────────
+async function startSpeech(panel) {
+  if (active) return; // already recording
+
+  // Ensure mic permission (inside user-gesture so prompt is allowed)
+  if (!micGranted) {
+    await requestMicPermission();
+    if (!micGranted) return;
+  }
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    alert('Usa Chrome (Android) o Safari (iOS) para el micrófono.');
+    return;
+  }
+
+  active       = panel;
+  capturedText = '';
+
+  const btn = document.getElementById(`mic-${panel}`);
+  btn.classList.add('listening');
+  setStatus(panel, '● Escuchando...', true);
+  document.getElementById(`tr-${panel}`).textContent = '...';
+
+  const other = panel === 'm' ? 'c' : 'm';
+  document.getElementById(`tl-${other}`).innerHTML =
+    '<div class="dots"><span></span><span></span><span></span></div>';
+
+  recognition = new SR();
+  recognition.lang            = state[panel].speechLang;
+  recognition.continuous      = true;   // FIX: keep open while button held
+  recognition.interimResults  = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = e => {
+    // FIX: iterate from resultIndex, not 0, to avoid text duplication
+    let final = '', interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final   += e.results[i][0].transcript;
+      else                       interim += e.results[i][0].transcript;
+    }
+    if (final)   capturedText += final;
+    const display = capturedText + (interim ? ' ' + interim : '');
+    document.getElementById(`tr-${panel}`).textContent = display || '...';
+  };
+
+  recognition.onerror = e => {
+    // 'aborted' is fired intentionally when we call .stop() — not an error
+    if (e.error === 'aborted' || e.error === 'no-speech') return;
+    console.error('SR error:', e.error);
+    setStatus(panel, '⚠ ' + e.error, true);
+    cleanupRecognition();
+  };
+
+  // FIX: onend now triggers translation when user releases button
+  // If button already released before onend fires, text is already in capturedText
+  recognition.onend = () => {
+    // Only auto-translate if recognition ended on its own (e.g. silence timeout)
+    // and the button is no longer active
+    if (active === panel) {
+      // Button still held? Restart to keep listening (Android auto-stops after silence)
+      try {
+        recognition.start();
+      } catch(e) {
+        // Can't restart, finalize
+        finalizeSpeech(panel);
+      }
+    }
+    // If active is null, stopSpeech already handled it
+  };
+
+  try {
+    recognition.start();
+  } catch (e) {
+    console.error('SR start error:', e);
+    cleanupRecognition();
+    active = null;
+  }
+}
+
+function stopSpeech(panel) {
+  if (active !== panel) return;
+  active = null; // Signal to onend: don't restart
+
+  cleanupRecognition();
+  finalizeSpeech(panel);
+}
+
+function finalizeSpeech(panel) {
+  const btn = document.getElementById(`mic-${panel}`);
+  btn.classList.remove('listening');
+  setStatus(panel, '', false);
+
+  const text = capturedText.trim();
+  if (!text) {
+    document.getElementById(`tr-${panel}`).textContent = '—';
+    const other = panel === 'm' ? 'c' : 'm';
+    document.getElementById(`tl-${other}`).textContent = '—';
+    return;
+  }
+  translate(panel, text);
+}
+
+function cleanupRecognition() {
+  if (recognition) {
+    try { recognition.stop(); } catch (e) {}
+    recognition.onresult = null;
+    recognition.onerror  = null;
+    recognition.onend    = null;
+    recognition = null;
+  }
+}
+
+// ── Translation via MyMemory ─────────────────────────────
+async function translate(srcPanel, text) {
+  const dstPanel = srcPanel === 'm' ? 'c' : 'm';
+  const src = state[srcPanel].lang;
+  const dst = state[dstPanel].lang;
+
+  // Don't translate if same language
+  if (src === dst) {
+    document.getElementById(`tl-${dstPanel}`).textContent = text;
+    return;
+  }
+
+  setStatus(dstPanel, '⟳ Traduciendo...', true);
+
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${dst}`;
+
+  try {
+    const res  = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    if (data.responseStatus === 200) {
+      const translation = data.responseData.translatedText;
+      document.getElementById(`tl-${dstPanel}`).textContent = translation;
+      setStatus(dstPanel, '✓', true);
+      setTimeout(() => setStatus(dstPanel, '', false), 1800);
+      speak(translation, state[dstPanel].speechLang);
+    } else {
+      document.getElementById(`tl-${dstPanel}`).textContent = '⚠ No se pudo traducir';
+      setStatus(dstPanel, '', false);
+    }
+  } catch (err) {
+    console.error('Translate error:', err);
+    document.getElementById(`tl-${dstPanel}`).textContent = '⚠ Sin conexión';
+    setStatus(dstPanel, '⚠ Sin internet', true);
+    setTimeout(() => setStatus(dstPanel, '', false), 3000);
+  }
+}
+
+// ── TTS (fixes iOS voice-not-loaded bug) ─────────────────
+function speak(text, lang) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang  = lang;
+  utter.rate  = 0.92;
+
+  if (voicesLoaded) {
+    window.speechSynthesis.speak(utter);
+  } else {
+    // Wait for voices then speak (iOS fix)
+    window.speechSynthesis.onvoiceschanged = () => {
+      voicesLoaded = true;
+      window.speechSynthesis.speak(utter);
+    };
+    // Fallback timeout
+    setTimeout(() => {
+      if (!voicesLoaded) window.speechSynthesis.speak(utter);
+    }, 500);
+  }
+}
+
+// ── Attach buttons AFTER all functions are declared ───────
+attachBtn('mic-m', 'm');
+attachBtn('mic-c', 'c');
+
+// Prevent context menu on long press
+document.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>
