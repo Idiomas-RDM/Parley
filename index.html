@@ -33,6 +33,7 @@
   /* ── Responsive wrapper: centered card on desktop, full screen on mobile ── */
   #shell {
     width: 100%;
+    /* Shell fills viewport; padding-top pushes content below banner */
     height: 100vh;
     display: flex;
     align-items: center;
@@ -40,19 +41,37 @@
     background: #111214;
     padding-top: var(--banner-h);
     transition: padding-top 0.2s;
+    box-sizing: border-box;
+  }
+
+  /* Mobile: shell is flex column, app fills all remaining height */
+  @media (max-width: 599px) {
+    #shell {
+      align-items: stretch;
+      justify-content: flex-start;
+    }
   }
 
   #app {
     display: flex;
     flex-direction: column;
     position: relative;
-    /* Mobile: full screen; Desktop: fixed card */
     width: 100%;
+    /* Mobile: fill remaining shell height after banner padding */
     height: calc(100vh - var(--banner-h));
     gap: 4px;
     transition: height 0.2s;
     background: #0A0A0A;
     overflow: hidden;
+  }
+
+  /* Mobile: let app grow to fill shell naturally */
+  @media (max-width: 599px) {
+    #app {
+      flex: 1;
+      height: auto;
+      min-height: 0;
+    }
   }
 
   /* Desktop: constrained card with shadow */
@@ -502,6 +521,7 @@ let capturedText   = '';
 let micGranted     = false;
 let voicesLoaded   = false;
 let currentFetchController = null;  // FIX #3: AbortController for race condition
+let sessionId = 0; // Incremented on each startSpeech; stale restarts check this
 
 // ── FIX #10: preload voices immediately ───────────────────
 function preloadVoices() {
@@ -625,6 +645,7 @@ async function startSpeech(panel) {
 
   active       = panel;
   capturedText = '';
+  const mySession = ++sessionId; // FIX freeze: tag this recording session
 
   document.getElementById(`mic-${panel}`).classList.add('listening');
   setStatus(panel, t(panel, 'listening'), true);   // FIX #7: localized status
@@ -665,16 +686,18 @@ async function startSpeech(panel) {
   recognition.onend = () => {
     if (active === panel) {
       // Still holding button — restart after browser releases audio resource
+      const snapSession = mySession;
       setTimeout(() => {
-        if (active === panel && recognition) {
+        // FIX freeze: if sessionId changed (new recording started or stopped), abort
+        if (active !== panel || sessionId !== snapSession) return;
+        if (recognition) {
           try { recognition.start(); }
           catch (err) {
-            // InvalidStateError or similar — create fresh instance
-            const savedPanel = panel;
             cleanupRecognition();
-            // Re-init recognition silently; user still holding button
-            restartRecognition(savedPanel);
+            restartRecognition(panel, snapSession);
           }
+        } else {
+          restartRecognition(panel, snapSession);
         }
       }, 150); // 150ms gap avoids InvalidStateError on Chromium/Safari
     }
@@ -688,8 +711,8 @@ async function startSpeech(panel) {
   }
 }
 
-function restartRecognition(panel) {
-  if (active !== panel) return;
+function restartRecognition(panel, snap) {
+  if (active !== panel || sessionId !== snap) return; // FIX: stale session guard
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
   recognition = new SR();
@@ -714,7 +737,9 @@ function restartRecognition(panel) {
     forceCleanup(panel);
   };
   recognition.onend = () => {
-    if (active === panel) setTimeout(() => restartRecognition(panel), 150);
+    if (active === panel && sessionId === snap) {
+      setTimeout(() => restartRecognition(panel, snap), 150);
+    }
   };
 
   try { recognition.start(); }
