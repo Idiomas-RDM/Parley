@@ -160,10 +160,8 @@
     display: block;
     object-fit: contain;
   }
-  /* Contra-rotar banderas en panel girado para que se vean normales */
-  .panel-customer .flag-img {
-    transform: rotate(180deg);
-  }
+  /* Las banderas del panel-customer NO necesitan contra-rotación
+     porque el HTML ya está en orden invertido */
 
   .text-area {
     width: 100%;
@@ -408,8 +406,25 @@
     </div>
   </div>
 
-  <!-- USUARIO B -->
+  <!-- USUARIO B — orden HTML invertido para que al rotar 180° quede visualmente correcto -->
   <div class="panel panel-customer">
+    <!-- En HTML: mic arriba → al rotar queda abajo visualmente (cerca del divisor) ✓ -->
+    <button class="mic-btn" id="mic-c">
+      <span class="mic-icon">🎙️</span>
+      <span class="mic-label" id="lbl-btn-c">SPEAK</span>
+    </button>
+    <div class="status" id="st-c"></div>
+    <div class="text-area">
+      <div class="box box-transcript">
+        <div class="box-label" id="lbl-said-c">What you said</div>
+        <div class="box-text" id="tr-c">—</div>
+      </div>
+      <div class="box box-translation">
+        <div class="box-label" id="lbl-recv-c">Translation received</div>
+        <div class="box-text big" id="tl-c">—</div>
+      </div>
+    </div>
+    <!-- Header con banderas: en HTML abajo → al rotar queda arriba visualmente ✓ -->
     <div class="panel-header">
       <div class="role-label">🅑 Usuario B</div>
       <div class="lang-selector" id="lc">
@@ -439,21 +454,6 @@
         </button>
       </div>
     </div>
-    <div class="text-area">
-      <div class="box box-transcript">
-        <div class="box-label" id="lbl-said-c">What you said</div>
-        <div class="box-text" id="tr-c">—</div>
-      </div>
-      <div class="box box-translation">
-        <div class="box-label" id="lbl-recv-c">Translation received</div>
-        <div class="box-text big" id="tl-c">—</div>
-      </div>
-    </div>
-    <div class="status" id="st-c"></div>
-    <button class="mic-btn" id="mic-c">
-      <span class="mic-icon">🎙️</span>
-      <span class="mic-label" id="lbl-btn-c">SPEAK</span>
-    </button>
   </div>
 
 </div>
@@ -648,7 +648,12 @@ async function startSpeech(panel) {
     r.onerror = e => {
       // 'no-speech' y 'aborted' son eventos normales del ciclo — ignorar
       if (e.error === 'no-speech' || e.error === 'aborted') return;
-      // Error real (network, not-allowed, etc.) → cerrar sesión
+      // 'network' en file:// es normal (SR usa iframe interno) — reiniciar silenciosamente
+      if (e.error === 'network') {
+        console.warn('[SR] network error — restarting');
+        return;  // onend se disparará y relanzará spawnInstance
+      }
+      // Error real (not-allowed, service-not-allowed, etc.) → cerrar sesión
       console.warn('[SR] error:', e.error);
       if (sessionId === mySession) forceStop(panel);
     };
