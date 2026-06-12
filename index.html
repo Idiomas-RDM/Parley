@@ -495,10 +495,18 @@ const state = {
   c: { lang:'en', speechLang:'en-US' }
 };
 
-let recognition = null, active = null, capturedText = '';
-let micGranted = false, voicesLoaded = false;
-let currentFetchController = null, sessionId = 0;
+// ── Estado global del reconocimiento ──────────────────────────────────────────
+let srObj       = null;   // instancia actual de SpeechRecognition
+let active      = null;   // panel activo ('m' | 'c' | null)
+let sessionId   = 0;      // cambia cada vez que se inicia una sesión nueva
+let userStopped = false;  // true = el usuario soltó el botón, NO reiniciar
+let capturedText = '';
 
+let micGranted  = false;
+let voicesLoaded = false;
+let currentFetchController = null;
+
+// ── Utilidades UI ──────────────────────────────────────────────────────────────
 function t(panel, key) { return (UI_STRINGS[state[panel].lang] || UI_STRINGS.en)[key]; }
 
 function updatePanelLabels(panel) {
@@ -513,8 +521,8 @@ if (window.speechSynthesis) {
   else window.speechSynthesis.onvoiceschanged = () => { voicesLoaded = true; };
 }
 
+// ── Banner de permiso ──────────────────────────────────────────────────────────
 const banner = document.getElementById('perm-banner');
-
 function showBanner() { banner.style.display='flex'; document.body.classList.add('banner-visible'); }
 function hideBanner()  { banner.style.display='none'; document.body.classList.remove('banner-visible'); }
 
@@ -524,7 +532,7 @@ async function requestMicPermission() {
   }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-    stream.getTracks().forEach(t=>t.stop());
+    stream.getTracks().forEach(tr=>tr.stop());
     micGranted = true; hideBanner();
   } catch(err) {
     banner.textContent='⚠ Permiso denegado — Ajustes > Micrófono / Settings > Microphone';
@@ -538,11 +546,15 @@ banner.addEventListener('click', requestMicPermission);
     if (navigator.permissions) {
       const r = await navigator.permissions.query({name:'microphone'});
       if (r.state==='granted') { micGranted=true; } else { showBanner(); }
-      r.onchange = ()=>{ if(r.state==='granted'){micGranted=true;hideBanner();}else{micGranted=false;showBanner();} };
+      r.onchange = ()=>{
+        if (r.state==='granted') { micGranted=true; hideBanner(); }
+        else { micGranted=false; showBanner(); }
+      };
     } else { showBanner(); }
   } catch(e) { showBanner(); }
 })();
 
+// ── Selectores de idioma ───────────────────────────────────────────────────────
 function initLangButtons(panelId, panel) {
   document.querySelectorAll('#'+panelId+' .lang-btn').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -563,106 +575,149 @@ function setStatus(panel, msg, visible) {
   el.classList.toggle('show', visible);
 }
 
+// ── Botones (push-to-talk) ─────────────────────────────────────────────────────
 function attachBtn(btnId, panel) {
   const btn = document.getElementById(btnId);
-  let isTouchActive = false;
-  btn.addEventListener('touchstart', e=>{ e.preventDefault(); isTouchActive=true; startSpeech(panel); }, {passive:false});
-  const onEnd = e=>{ e.preventDefault(); isTouchActive=false; stopSpeech(panel); };
-  btn.addEventListener('touchend',    onEnd, {passive:false});
-  btn.addEventListener('touchcancel', onEnd, {passive:false});
-  btn.addEventListener('mousedown',  ()=>{ if(!isTouchActive) startSpeech(panel); });
-  btn.addEventListener('mouseup',    ()=>{ if(!isTouchActive) stopSpeech(panel); });
-  btn.addEventListener('mouseleave', ()=>{ if(!isTouchActive && active===panel) stopSpeech(panel); });
+  let touchDown = false;
+
+  btn.addEventListener('touchstart', e=>{
+    e.preventDefault();
+    touchDown = true;
+    startSpeech(panel);
+  }, {passive:false});
+
+  const onTouchEnd = e=>{
+    e.preventDefault();
+    touchDown = false;
+    stopSpeech(panel);
+  };
+  btn.addEventListener('touchend',    onTouchEnd, {passive:false});
+  btn.addEventListener('touchcancel', onTouchEnd, {passive:false});
+
+  btn.addEventListener('mousedown', ()=>{ if(!touchDown) startSpeech(panel); });
+  btn.addEventListener('mouseup',   ()=>{ if(!touchDown) stopSpeech(panel); });
+  btn.addEventListener('mouseleave',()=>{ if(!touchDown && active===panel) stopSpeech(panel); });
 }
 
+// ── Núcleo de reconocimiento ───────────────────────────────────────────────────
 async function startSpeech(panel) {
-  if (active) return;
-  if (!micGranted) { await requestMicPermission(); if(!micGranted) return; }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { alert('Usa Chrome (Android) o Safari (iOS) para el micrófono.'); return; }
+  if (active) return;  // ya hay una sesión activa
 
-  active = panel; capturedText = '';
+  if (!micGranted) {
+    await requestMicPermission();
+    if (!micGranted) return;
+  }
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { alert('Usa Chrome o Edge para el micrófono.'); return; }
+
+  // Inicializar estado de sesión
+  active       = panel;
+  userStopped  = false;
+  capturedText = '';
   const mySession = ++sessionId;
+
   document.getElementById('mic-'+panel).classList.add('listening');
   setStatus(panel, t(panel,'listening'), true);
   document.getElementById('tr-'+panel).textContent = '...';
   const other = panel==='m'?'c':'m';
-  document.getElementById('tl-'+other).innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+  document.getElementById('tl-'+other).innerHTML =
+    '<div class="dots"><span></span><span></span><span></span></div>';
 
-  function buildAndStart() {
-    if (active !== panel || sessionId !== mySession) return;
+  // Crear y arrancar una instancia nueva; se llama de nuevo en onend si la sesión sigue viva
+  function spawnInstance() {
+    if (sessionId !== mySession || userStopped) return;  // sesión cancelada
+
     const r = new SR();
-    r.lang = state[panel].speechLang;
-    r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    r.lang            = state[panel].speechLang;
+    r.continuous      = true;
+    r.interimResults  = true;
+    r.maxAlternatives = 1;
 
     r.onresult = e => {
+      if (sessionId !== mySession) return;
       for (let i = e.resultIndex; i < e.results.length; i++)
         if (e.results[i].isFinal) capturedText += e.results[i][0].transcript + ' ';
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++)
         if (!e.results[i].isFinal) interim += e.results[i][0].transcript;
-      document.getElementById('tr-'+panel).textContent = (capturedText + interim).trim() || '...';
+      document.getElementById('tr-'+panel).textContent =
+        (capturedText + interim).trim() || '...';
     };
 
     r.onerror = e => {
-      // 'no-speech' y 'aborted' son normales — no terminar la sesión
-      if (e.error === 'aborted' || e.error === 'no-speech') return;
-      console.warn('SR error:', e.error);
-      forceCleanup(panel);
+      // 'no-speech' y 'aborted' son eventos normales del ciclo — ignorar
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      // Error real (network, not-allowed, etc.) → cerrar sesión
+      console.warn('[SR] error:', e.error);
+      if (sessionId === mySession) forceStop(panel);
     };
 
-    // onend: Chrome desktop para tras silencio → reiniciamos con nueva instancia
     r.onend = () => {
-      if (active !== panel || sessionId !== mySession) return;
-      // Limpiar handlers del objeto antiguo antes de crear uno nuevo
-      r.onresult = null; r.onerror = null; r.onend = null;
-      recognition = null;
-      setTimeout(() => {
-        if (active === panel && sessionId === mySession) buildAndStart();
-      }, 200);
+      // Se dispara tanto al parar el browser (silencio) como al llamar r.abort()
+      // Si el usuario NO ha soltado el botón → reiniciar automáticamente
+      if (sessionId !== mySession || userStopped) return;
+      srObj = null;
+      // Pequeño delay para evitar errores de "already started"
+      setTimeout(spawnInstance, 250);
     };
 
-    recognition = r;
-    try { r.start(); }
-    catch (e) {
-      console.warn('SR start error:', e);
-      recognition = null;
-      setTimeout(() => {
-        if (active === panel && sessionId === mySession) buildAndStart();
-      }, 400);
+    srObj = r;
+    try {
+      r.start();
+    } catch(e) {
+      console.warn('[SR] start error:', e.message);
+      srObj = null;
+      if (!userStopped && sessionId === mySession)
+        setTimeout(spawnInstance, 500);
     }
   }
 
-  buildAndStart();
+  spawnInstance();
 }
 
 function stopSpeech(panel) {
-  if(active!==panel) return;
-  active=null; cleanupRecognition(); finalizeSpeech(panel);
+  if (active !== panel) return;
+
+  userStopped = true;   // ← impide que onend reinicie
+  active = null;
+
+  // Abortar instancia actual limpiamente
+  if (srObj) {
+    srObj.onresult = null;
+    srObj.onerror  = null;
+    srObj.onend    = null;
+    try { srObj.abort(); } catch(e) {}
+    srObj = null;
+  }
+
+  finalizeSpeech(panel);
 }
 
-function forceCleanup(panel) {
-  active=null; cleanupRecognition();
+function forceStop(panel) {
+  userStopped = true;
+  active = null;
+  if (srObj) {
+    srObj.onresult = null;
+    srObj.onerror  = null;
+    srObj.onend    = null;
+    try { srObj.abort(); } catch(e) {}
+    srObj = null;
+  }
   document.getElementById('mic-'+panel).classList.remove('listening');
-  setStatus(panel,'',false);
+  setStatus(panel, '', false);
 }
 
 function finalizeSpeech(panel) {
   document.getElementById('mic-'+panel).classList.remove('listening');
-  setStatus(panel,'',false);
+  setStatus(panel, '', false);
   const text = capturedText.trim();
-  if(!text) {
-    document.getElementById('tr-'+panel).textContent='—';
-    document.getElementById('tl-'+(panel==='m'?'c':'m')).textContent='—'; return;
+  if (!text) {
+    document.getElementById('tr-'+panel).textContent = '—';
+    document.getElementById('tl-'+(panel==='m'?'c':'m')).textContent = '—';
+    return;
   }
   translate(panel, text);
-}
-
-function cleanupRecognition() {
-  if(recognition) {
-    try{recognition.stop();}catch(e){}
-    recognition.onresult=null; recognition.onerror=null; recognition.onend=null; recognition=null;
-  }
 }
 
 async function translate(srcPanel, text) {
