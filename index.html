@@ -204,7 +204,10 @@ function spawnSR(panel,mysid){
   if(stopped||sid!==mysid) return;
   const r=new SR();
   r.lang=state[panel].speech;
-  r.continuous=true;
+  // continuous:false es MAS estable en Chrome desktop — cada utterance
+  // termina limpiamente y onend relanza. Con continuous:true Chrome
+  // para tras silencio y a veces no dispara onend correctamente.
+  r.continuous=false;
   r.interimResults=true;
   r.onresult=e=>{
     if(sid!==mysid) return;
@@ -216,20 +219,31 @@ function spawnSR(panel,mysid){
     $('tr-'+panel).textContent=(captured+itr).trim()||'...';
   };
   r.onerror=e=>{
+    // no-speech y aborted son normales en el ciclo continuo
     if(e.error==='aborted'||e.error==='no-speech') return;
-    if(e.error==='not-allowed'){
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
       showBanner('⚠ Micrófono bloqueado — permite el acceso en Ajustes del sitio y recarga');
       stopSess(panel); return;
     }
-    console.warn('SR:',e.error);
+    console.warn('SR error:',e.error);
+    // Para cualquier otro error, reintentar
   };
   r.onend=()=>{
     cur=null;
-    if(!stopped&&sid===mysid) setTimeout(()=>spawnSR(panel,mysid),200);
+    // Reiniciar solo si el usuario sigue presionando
+    if(!stopped&&sid===mysid){
+      // Delay para que Chrome libere el contexto de audio completamente
+      setTimeout(()=>spawnSR(panel,mysid),300);
+    }
   };
   cur=r;
-  try{r.start();}
-  catch(e){console.warn('SR start:',e.message);cur=null;if(!stopped&&sid===mysid)setTimeout(()=>spawnSR(panel,mysid),400);}
+  try{
+    r.start();
+  }catch(e){
+    console.warn('SR start error:',e.message);
+    cur=null;
+    if(!stopped&&sid===mysid) setTimeout(()=>spawnSR(panel,mysid),500);
+  }
 }
 
 async function startSess(panel){
