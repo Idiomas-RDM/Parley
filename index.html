@@ -162,6 +162,7 @@ const str=(p,k)=>(STR[state[p].lang]||STR.en)[k];
 const setLbls=p=>{$('ls-'+p).textContent=str(p,'said');$('lr-'+p).textContent=str(p,'recv');$('lb-'+p).textContent=str(p,'btn')};
 const setSt=(p,m,v)=>{$('st-'+p).textContent=m;$('st-'+p).classList.toggle('on',v)};
 
+// Idiomas
 ['m','c'].forEach(p=>{
   document.querySelectorAll('#l'+(p==='m'?'m':'c')+' .lang-btn').forEach(b=>{
     b.addEventListener('click',()=>{
@@ -175,139 +176,184 @@ const setSt=(p,m,v)=>{$('st-'+p).textContent=m;$('st-'+p).classList.toggle('on',
 const banner=$('banner');
 function showBanner(msg){banner.textContent=msg;banner.style.display='flex';document.body.classList.add('bv');}
 
-// ── MICRÓFONO ──
-// Estrategia: primero pedir permiso con getUserMedia para que Chrome
-// registre el permiso, luego liberar el stream, y SOLO ENTONCES usar SR.
-// Esto resuelve el problema en Chrome Windows donde SR solo funciona
-// si el permiso fue otorgado previamente en la misma sesión.
+// ── MICRÓFONO ──────────────────────────────────────────────────────────────────
+// Usamos UNA sola instancia de SR con continuous:true.
+// La mantenemos viva mientras el botón esté presionado.
+// Al soltar: abort() + traducir lo capturado.
 
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let active=null,stopped=true,sid=0,captured='',cur=null,fctl=null;
-let micOk=false;
+let rec=null;        // instancia SR activa
+let recPanel=null;   // panel que está grabando
+let captured='';     // texto acumulado
+let fctl=null;       // fetch controller
 
-async function ensureMic(){
-  if(micOk) return true;
-  if(!navigator.mediaDevices?.getUserMedia) return true; // confiar en SR
-  try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    // Liberar INMEDIATAMENTE — solo necesitamos el permiso registrado
-    stream.getTracks().forEach(t=>t.stop());
-    micOk=true;
-    return true;
-  }catch(e){
-    showBanner('⚠ Micrófono bloqueado — permite el acceso en Ajustes del sitio y recarga la página');
-    return false;
-  }
-}
+function startRec(panel){
+  if(recPanel) return;
+  if(!SR){alert('Tu navegador no soporta reconocimiento de voz. Usa Chrome.');return;}
 
-function spawnSR(panel,mysid){
-  if(stopped||sid!==mysid) return;
-  const r=new SR();
-  r.lang=state[panel].speech;
-  // continuous:false es MAS estable en Chrome desktop — cada utterance
-  // termina limpiamente y onend relanza. Con continuous:true Chrome
-  // para tras silencio y a veces no dispara onend correctamente.
-  r.continuous=false;
-  r.interimResults=true;
-  r.onresult=e=>{
-    if(sid!==mysid) return;
-    for(let i=e.resultIndex;i<e.results.length;i++)
-      if(e.results[i].isFinal) captured+=e.results[i][0].transcript+' ';
-    let itr='';
-    for(let i=e.resultIndex;i<e.results.length;i++)
-      if(!e.results[i].isFinal) itr+=e.results[i][0].transcript;
-    $('tr-'+panel).textContent=(captured+itr).trim()||'...';
-  };
-  r.onerror=e=>{
-    // no-speech y aborted son normales en el ciclo continuo
-    if(e.error==='aborted'||e.error==='no-speech') return;
-    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-      showBanner('⚠ Micrófono bloqueado — permite el acceso en Ajustes del sitio y recarga');
-      stopSess(panel); return;
-    }
-    console.warn('SR error:',e.error);
-    // Para cualquier otro error, reintentar
-  };
-  r.onend=()=>{
-    cur=null;
-    // Reiniciar solo si el usuario sigue presionando
-    if(!stopped&&sid===mysid){
-      // Delay para que Chrome libere el contexto de audio completamente
-      setTimeout(()=>spawnSR(panel,mysid),300);
-    }
-  };
-  cur=r;
-  try{
-    r.start();
-  }catch(e){
-    console.warn('SR start error:',e.message);
-    cur=null;
-    if(!stopped&&sid===mysid) setTimeout(()=>spawnSR(panel,mysid),500);
-  }
-}
+  recPanel=panel;
+  captured='';
 
-async function startSess(panel){
-  if(active) return;
-  if(!SR){alert('Usa Chrome o Edge.');return;}
-  const ok=await ensureMic();
-  if(!ok) return;
-  active=panel;stopped=false;captured='';
-  const mysid=++sid;
   $('mic-'+panel).classList.add('on');
   setSt(panel,str(panel,'li'),true);
   $('tr-'+panel).textContent='...';
   const other=panel==='m'?'c':'m';
   $('tl-'+other).innerHTML='<div class="dots"><span></span><span></span><span></span></div>';
-  spawnSR(panel,mysid);
+
+  rec=new SR();
+  rec.lang=state[panel].speech;
+  rec.continuous=true;
+  rec.interimResults=true;
+  rec.maxAlternatives=1;
+
+  rec.onresult=e=>{
+    let final='', interim='';
+    for(let i=0;i<e.results.length;i++){
+      if(e.results[i].isFinal) final+=e.results[i][0].transcript+' ';
+      else interim+=e.results[i][0].transcript;
+    }
+    captured=final;
+    $('tr-'+panel).textContent=(final+interim).trim()||'...';
+  };
+
+  rec.onerror=e=>{
+    console.log('SR onerror:',e.error);
+    if(e.error==='no-speech') return; // normal, continuar
+    if(e.error==='aborted')   return; // lo abortamos nosotros, normal
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+      showBanner('⚠ Permiso de micrófono denegado — haz clic en el candado de la barra y permite el micrófono');
+      stopRec(panel,false);
+      return;
+    }
+    console.warn('SR error inesperado:',e.error);
+  };
+
+  rec.onend=e=>{
+    // Si sigue activo (Chrome paró por silencio), reiniciar
+    if(recPanel===panel){
+      console.log('SR onend — reiniciando...');
+      try{rec.start();}
+      catch(err){
+        console.warn('rec.start() error:',err.message);
+        // Crear nueva instancia
+        rec=null;
+        setTimeout(()=>{if(recPanel===panel) startRecInner(panel);},300);
+      }
+    }
+  };
+
+  try{
+    rec.start();
+  }catch(e){
+    console.warn('rec.start() inicial error:',e.message);
+    rec=null; recPanel=null;
+    $('mic-'+panel).classList.remove('on');
+    setSt(panel,'',false);
+  }
 }
 
-function stopSess(panel){
-  if(active!==panel) return;
-  stopped=true;active=null;
-  if(cur){const r=cur;cur=null;r.onresult=null;r.onerror=null;r.onend=null;try{r.abort();}catch(e){}}
+// Reinicio interno sin resetear UI
+function startRecInner(panel){
+  if(!recPanel||recPanel!==panel) return;
+  rec=new SR();
+  rec.lang=state[panel].speech;
+  rec.continuous=true;
+  rec.interimResults=true;
+  rec.maxAlternatives=1;
+  rec.onresult=e=>{
+    let final='',interim='';
+    for(let i=0;i<e.results.length;i++){
+      if(e.results[i].isFinal) final+=e.results[i][0].transcript+' ';
+      else interim+=e.results[i][0].transcript;
+    }
+    captured=final;
+    $('tr-'+panel).textContent=(final+interim).trim()||'...';
+  };
+  rec.onerror=e=>{
+    if(e.error==='no-speech'||e.error==='aborted') return;
+    console.warn('SR inner error:',e.error);
+  };
+  rec.onend=()=>{
+    if(recPanel===panel){
+      try{rec.start();}catch(err){setTimeout(()=>startRecInner(panel),300);}
+    }
+  };
+  try{rec.start();}catch(e){setTimeout(()=>startRecInner(panel),300);}
+}
+
+function stopRec(panel, translate=true){
+  if(recPanel!==panel) return;
+  recPanel=null;
+
+  if(rec){
+    rec.onresult=null;
+    rec.onerror=null;
+    rec.onend=null;
+    try{rec.abort();}catch(e){}
+    rec=null;
+  }
+
   $('mic-'+panel).classList.remove('on');
   setSt(panel,'',false);
+
   const txt=captured.trim();
-  if(!txt){$('tr-'+panel).textContent='—';$('tl-'+(panel==='m'?'c':'m')).textContent='—';return;}
+  if(!translate||!txt){
+    $('tr-'+panel).textContent=txt||'—';
+    $('tl-'+(panel==='m'?'c':'m')).textContent='—';
+    return;
+  }
   doTrans(panel,txt);
 }
 
+// Botones
 function bindBtn(panel){
   const btn=$('mic-'+panel);
   let touch=false;
-  btn.addEventListener('touchstart',e=>{e.preventDefault();touch=true;startSess(panel);},{passive:false});
-  btn.addEventListener('touchend',  e=>{e.preventDefault();touch=false;stopSess(panel);},{passive:false});
-  btn.addEventListener('touchcancel',e=>{e.preventDefault();touch=false;stopSess(panel);},{passive:false});
-  btn.addEventListener('mousedown',()=>{if(!touch)startSess(panel);});
-  btn.addEventListener('mouseup',  ()=>{if(!touch)stopSess(panel);});
-  btn.addEventListener('mouseleave',()=>{if(!touch&&active===panel)stopSess(panel);});
+  btn.addEventListener('touchstart',e=>{e.preventDefault();touch=true;startRec(panel);},{passive:false});
+  btn.addEventListener('touchend',  e=>{e.preventDefault();touch=false;stopRec(panel);},{passive:false});
+  btn.addEventListener('touchcancel',e=>{e.preventDefault();touch=false;stopRec(panel);},{passive:false});
+  btn.addEventListener('mousedown',()=>{if(!touch)startRec(panel);});
+  btn.addEventListener('mouseup',  ()=>{if(!touch)stopRec(panel);});
+  btn.addEventListener('mouseleave',()=>{if(!touch&&recPanel===panel)stopRec(panel);});
 }
 
-// ── TRADUCCIÓN ──
+// ── TRADUCCIÓN ─────────────────────────────────────────────────────────────────
 async function doTrans(srcP,text){
   const dstP=srcP==='m'?'c':'m';
-  const src=state[srcP].lang,dst=state[dstP].lang;
+  const src=state[srcP].lang, dst=state[dstP].lang;
   if(src===dst){$('tl-'+dstP).textContent=text;return;}
-  if(fctl)fctl.abort();fctl=new AbortController();
+  if(fctl)fctl.abort();
+  fctl=new AbortController();
   setSt(dstP,str(dstP,'tr'),true);
   try{
-    const res=await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${dst}`,{signal:fctl.signal});
+    const res=await fetch(
+      'https://api.mymemory.translated.net/get?q='+encodeURIComponent(text)+'&langpair='+src+'|'+dst,
+      {signal:fctl.signal}
+    );
     const d=await res.json();
     const tr=d?.responseData?.translatedText;
-    if(d.responseStatus===200&&tr?.trim()){
+    if(d.responseStatus===200&&tr&&tr.trim()){
       $('tl-'+dstP).textContent=tr.trim();
       setSt(dstP,str(dstP,'ok'),true);
       setTimeout(()=>setSt(dstP,'',false),2000);
       doSpeak(tr.trim(),state[dstP].speech);
-    }else{$('tl-'+dstP).textContent='⚠ No se pudo traducir';setSt(dstP,'',false);}
+    }else{
+      $('tl-'+dstP).textContent='⚠ No se pudo traducir';
+      setSt(dstP,'',false);
+    }
   }catch(e){
     if(e.name==='AbortError')return;
-    $('tl-'+dstP).textContent=str(dstP,'er');setSt(dstP,'',false);
+    $('tl-'+dstP).textContent=str(dstP,'er');
+    setSt(dstP,'',false);
   }finally{fctl=null;}
 }
 
+// ── VOZ ────────────────────────────────────────────────────────────────────────
 let voicesOk=false;
-if(window.speechSynthesis){if(speechSynthesis.getVoices().length)voicesOk=true;else speechSynthesis.onvoiceschanged=()=>voicesOk=true;}
+if(window.speechSynthesis){
+  if(speechSynthesis.getVoices().length)voicesOk=true;
+  else speechSynthesis.onvoiceschanged=()=>voicesOk=true;
+}
 function doSpeak(text,lang){
   if(!window.speechSynthesis)return;
   speechSynthesis.cancel();
@@ -315,6 +361,7 @@ function doSpeak(text,lang){
   setTimeout(()=>voicesOk?go():setTimeout(go,400),50);
 }
 
+// ── INIT ───────────────────────────────────────────────────────────────────────
 bindBtn('m');bindBtn('c');setLbls('m');setLbls('c');
 document.addEventListener('contextmenu',e=>e.preventDefault());
 </script>
