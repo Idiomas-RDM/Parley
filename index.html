@@ -156,214 +156,264 @@ const STR={
   zh:{said:'您说的话',recv:'收到的翻译',btn:'说话',li:'● 聆听中...',tr:'⟳ 翻译中...',ok:'✓ 完成',er:'⚠ 无网络'},
   ja:{said:'あなたが言ったこと',recv:'受信した翻訳',btn:'話す',li:'● 聞いています...',tr:'⟳ 翻訳中...',ok:'✓ 完了',er:'⚠ 接続なし'},
 };
-const state={m:{lang:'es',speech:'es-ES'},c:{lang:'en',speech:'en-US'}};
-const $=id=>document.getElementById(id);
-const str=(p,k)=>(STR[state[p].lang]||STR.en)[k];
-const setLbls=p=>{$('ls-'+p).textContent=str(p,'said');$('lr-'+p).textContent=str(p,'recv');$('lb-'+p).textContent=str(p,'btn')};
-const setSt=(p,m,v)=>{$('st-'+p).textContent=m;$('st-'+p).classList.toggle('on',v)};
 
-// Idiomas
-['m','c'].forEach(p=>{
-  document.querySelectorAll('#l'+(p==='m'?'m':'c')+' .lang-btn').forEach(b=>{
-    b.addEventListener('click',()=>{
-      state[p].lang=b.dataset.lang;state[p].speech=b.dataset.speech;
-      document.querySelectorAll('#l'+(p==='m'?'m':'c')+' .lang-btn').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active');setLbls(p);
+// ── Estado global — todas las variables declaradas explícitamente (FIX B) ──
+const state = {m:{lang:'es',speech:'es-ES'}, c:{lang:'en',speech:'en-US'}};
+const $     = id => document.getElementById(id);
+// FIX B: str usa optional chaining — nunca lanza TypeError
+const str   = (p,k) => (STR[state[p]?.lang] || STR.en)[k] || '';
+
+let rec      = null;   // instancia SR activa
+let recPanel = null;   // panel grabando
+let captured = '';     // texto acumulado
+let fctl     = null;   // FIX B: declarado globalmente — sin ReferenceError ni colisión entre paneles
+
+// FIX E (entidades HTML): decodifica &amp; &quot; &#39; etc. que devuelve MyMemory
+function decodeEntities(str) {
+  const txt = document.createElement('textarea');
+  txt.innerHTML = str;
+  return txt.value;
+}
+
+const setLbls = p => {
+  $('ls-'+p).textContent = str(p,'said');
+  $('lr-'+p).textContent = str(p,'recv');
+  $('lb-'+p).textContent = str(p,'btn');
+};
+const setSt = (p,m,v) => {
+  $('st-'+p).textContent = m;
+  $('st-'+p).classList.toggle('on',v);
+};
+
+// ── Idiomas ────────────────────────────────────────────────────────────────────
+['m','c'].forEach(p => {
+  const sel = p==='m' ? 'lm' : 'lc';
+  document.querySelectorAll('#'+sel+' .lang-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state[p].lang   = b.dataset.lang;
+      state[p].speech = b.dataset.speech;
+      document.querySelectorAll('#'+sel+' .lang-btn').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      setLbls(p);
     });
   });
 });
 
-const banner=$('banner');
-function showBanner(msg){banner.textContent=msg;banner.style.display='flex';document.body.classList.add('bv');}
+// ── Banner ─────────────────────────────────────────────────────────────────────
+const banner = $('banner');
+function showBanner(msg) {
+  banner.textContent = msg; // FIX A: textContent — no innerHTML
+  banner.style.display = 'flex';
+  document.body.classList.add('bv');
+}
 
 // ── MICRÓFONO ──────────────────────────────────────────────────────────────────
-// Usamos UNA sola instancia de SR con continuous:true.
-// La mantenemos viva mientras el botón esté presionado.
-// Al soltar: abort() + traducir lo capturado.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let rec=null;        // instancia SR activa
-let recPanel=null;   // panel que está grabando
-let captured='';     // texto acumulado
-let fctl=null;       // fetch controller
+function buildRec(panel) {
+  const r = new SR();
+  // FIX A: optional chaining en speech
+  r.lang            = state[panel]?.speech || 'es-ES';
+  r.continuous      = true;
+  r.interimResults  = true;
+  r.maxAlternatives = 1;
 
-function startRec(panel){
-  if(recPanel) return;
-  if(!SR){alert('Tu navegador no soporta reconocimiento de voz. Usa Chrome.');return;}
-
-  recPanel=panel;
-  captured='';
-
-  $('mic-'+panel).classList.add('on');
-  setSt(panel,str(panel,'li'),true);
-  $('tr-'+panel).textContent='...';
-  const other=panel==='m'?'c':'m';
-  $('tl-'+other).innerHTML='<div class="dots"><span></span><span></span><span></span></div>';
-
-  rec=new SR();
-  rec.lang=state[panel].speech;
-  rec.continuous=true;
-  rec.interimResults=true;
-  rec.maxAlternatives=1;
-
-  rec.onresult=e=>{
-    let final='', interim='';
-    for(let i=0;i<e.results.length;i++){
-      if(e.results[i].isFinal) final+=e.results[i][0].transcript+' ';
-      else interim+=e.results[i][0].transcript;
+  r.onresult = e => {
+    if (recPanel !== panel) return;
+    let final = '', interim = '';
+    for (let i=0; i<e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
+      else interim += e.results[i][0].transcript;
     }
-    captured=final;
-    $('tr-'+panel).textContent=(final+interim).trim()||'...';
+    captured = final;
+    // FIX A: siempre textContent — nunca innerHTML con texto de usuario
+    $('tr-'+panel).textContent = (final+interim).trim() || '...';
   };
 
-  rec.onerror=e=>{
-    console.log('SR onerror:',e.error);
-    if(e.error==='no-speech') return; // normal, continuar
-    if(e.error==='aborted')   return; // lo abortamos nosotros, normal
-    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-      showBanner('⚠ Permiso de micrófono denegado — haz clic en el candado de la barra y permite el micrófono');
-      stopRec(panel,false);
+  r.onerror = e => {
+    if (e.error==='no-speech' || e.error==='aborted') return;
+    if (e.error==='not-allowed' || e.error==='service-not-allowed') {
+      showBanner('⚠ Micrófono bloqueado — haz clic en el candado y permite el micrófono');
+      stopRec(panel, false);
       return;
     }
-    console.warn('SR error inesperado:',e.error);
+    console.warn('SR error:', e.error);
   };
 
-  rec.onend=e=>{
-    // Si sigue activo (Chrome paró por silencio), reiniciar
-    if(recPanel===panel){
-      console.log('SR onend — reiniciando...');
-      try{rec.start();}
-      catch(err){
-        console.warn('rec.start() error:',err.message);
-        // Crear nueva instancia
-        rec=null;
-        setTimeout(()=>{if(recPanel===panel) startRecInner(panel);},300);
-      }
+  r.onend = () => {
+    if (recPanel !== panel) return;
+    // Chrome para por silencio — reusar misma instancia es lo más estable
+    try {
+      r.start();
+    } catch(err) {
+      console.warn('r.start() falló, reconstruyendo:', err.message);
+      rec = null;
+      // FIX E: delay suficiente para gama baja (500ms > 300ms)
+      setTimeout(() => {
+        if (recPanel === panel) {
+          rec = buildRec(panel);
+          try { rec.start(); } catch(e2) { console.warn(e2); }
+        }
+      }, 500);
     }
   };
 
-  try{
+  return r;
+}
+
+function startRec(panel) {
+  if (recPanel) return;
+  if (!SR) { alert('Usa Chrome o Edge para el micrófono.'); return; }
+
+  recPanel = panel;
+  captured = '';
+
+  $('mic-'+panel).classList.add('on');
+  setSt(panel, str(panel,'li'), true);
+  $('tr-'+panel).textContent = '...';
+  const other = panel==='m' ? 'c' : 'm';
+  // innerHTML solo para contenido fijo (dots loader) — no datos de usuario (FIX A)
+  $('tl-'+other).innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+
+  rec = buildRec(panel);
+  try {
     rec.start();
-  }catch(e){
-    console.warn('rec.start() inicial error:',e.message);
-    rec=null; recPanel=null;
+  } catch(e) {
+    console.warn('startRec inicial error:', e.message);
+    rec = null; recPanel = null;
     $('mic-'+panel).classList.remove('on');
-    setSt(panel,'',false);
+    setSt(panel, '', false);
   }
 }
 
-// Reinicio interno sin resetear UI
-function startRecInner(panel){
-  if(!recPanel||recPanel!==panel) return;
-  rec=new SR();
-  rec.lang=state[panel].speech;
-  rec.continuous=true;
-  rec.interimResults=true;
-  rec.maxAlternatives=1;
-  rec.onresult=e=>{
-    let final='',interim='';
-    for(let i=0;i<e.results.length;i++){
-      if(e.results[i].isFinal) final+=e.results[i][0].transcript+' ';
-      else interim+=e.results[i][0].transcript;
-    }
-    captured=final;
-    $('tr-'+panel).textContent=(final+interim).trim()||'...';
-  };
-  rec.onerror=e=>{
-    if(e.error==='no-speech'||e.error==='aborted') return;
-    console.warn('SR inner error:',e.error);
-  };
-  rec.onend=()=>{
-    if(recPanel===panel){
-      try{rec.start();}catch(err){setTimeout(()=>startRecInner(panel),300);}
-    }
-  };
-  try{rec.start();}catch(e){setTimeout(()=>startRecInner(panel),300);}
-}
+function stopRec(panel, translate=true) {
+  if (recPanel !== panel) return;
+  recPanel = null;
 
-function stopRec(panel, translate=true){
-  if(recPanel!==panel) return;
-  recPanel=null;
-
-  if(rec){
-    rec.onresult=null;
-    rec.onerror=null;
-    rec.onend=null;
-    try{rec.abort();}catch(e){}
-    rec=null;
+  if (rec) {
+    rec.onresult = null;
+    rec.onerror  = null;
+    rec.onend    = null;
+    try { rec.abort(); } catch(e) {}
+    rec = null;
   }
 
   $('mic-'+panel).classList.remove('on');
-  setSt(panel,'',false);
+  setSt(panel, '', false);
 
-  const txt=captured.trim();
-  if(!translate||!txt){
-    $('tr-'+panel).textContent=txt||'—';
-    $('tl-'+(panel==='m'?'c':'m')).textContent='—';
+  const txt = captured.trim();
+  $('tr-'+panel).textContent = txt || '—';
+
+  if (!translate || !txt) {
+    $('tl-'+(panel==='m'?'c':'m')).textContent = '—';
     return;
   }
-  doTrans(panel,txt);
+  doTrans(panel, txt);
 }
 
-// Botones
-function bindBtn(panel){
-  const btn=$('mic-'+panel);
-  let touch=false;
-  btn.addEventListener('touchstart',e=>{e.preventDefault();touch=true;startRec(panel);},{passive:false});
-  btn.addEventListener('touchend',  e=>{e.preventDefault();touch=false;stopRec(panel);},{passive:false});
-  btn.addEventListener('touchcancel',e=>{e.preventDefault();touch=false;stopRec(panel);},{passive:false});
-  btn.addEventListener('mousedown',()=>{if(!touch)startRec(panel);});
-  btn.addEventListener('mouseup',  ()=>{if(!touch)stopRec(panel);});
-  btn.addEventListener('mouseleave',()=>{if(!touch&&recPanel===panel)stopRec(panel);});
+function bindBtn(panel) {
+  const btn = $('mic-'+panel);
+  let touch = false;
+  btn.addEventListener('touchstart', e=>{e.preventDefault();touch=true; startRec(panel);},{passive:false});
+  btn.addEventListener('touchend',   e=>{e.preventDefault();touch=false;stopRec(panel); },{passive:false});
+  btn.addEventListener('touchcancel',e=>{e.preventDefault();touch=false;stopRec(panel); },{passive:false});
+  btn.addEventListener('mousedown',  ()=>{if(!touch) startRec(panel);});
+  btn.addEventListener('mouseup',    ()=>{if(!touch) stopRec(panel); });
+  btn.addEventListener('mouseleave', ()=>{if(!touch && recPanel===panel) stopRec(panel);});
 }
 
 // ── TRADUCCIÓN ─────────────────────────────────────────────────────────────────
-async function doTrans(srcP,text){
-  const dstP=srcP==='m'?'c':'m';
-  const src=state[srcP].lang, dst=state[dstP].lang;
-  if(src===dst){$('tl-'+dstP).textContent=text;return;}
-  if(fctl)fctl.abort();
-  fctl=new AbortController();
-  setSt(dstP,str(dstP,'tr'),true);
-  try{
-    const res=await fetch(
+async function doTrans(srcP, text) {
+  const dstP = srcP==='m' ? 'c' : 'm';
+  // FIX A+C: optional chaining con fallback seguro
+  const src = state[srcP]?.lang || 'es';
+  const dst = state[dstP]?.lang || 'en';
+
+  if (src===dst) { $('tl-'+dstP).textContent=text; return; }
+
+  // FIX B: fctl global — sin colisión entre paneles ni ReferenceError
+  if (fctl) { try{fctl.abort();}catch(e){} }
+  fctl = new AbortController();
+  setSt(dstP, str(dstP,'tr'), true);
+
+  try {
+    const res = await fetch(
       'https://api.mymemory.translated.net/get?q='+encodeURIComponent(text)+'&langpair='+src+'|'+dst,
-      {signal:fctl.signal}
+      {signal: fctl.signal}
     );
-    const d=await res.json();
-    const tr=d?.responseData?.translatedText;
-    if(d.responseStatus===200&&tr&&tr.trim()){
-      $('tl-'+dstP).textContent=tr.trim();
-      setSt(dstP,str(dstP,'ok'),true);
-      setTimeout(()=>setSt(dstP,'',false),2000);
-      doSpeak(tr.trim(),state[dstP].speech);
-    }else{
-      $('tl-'+dstP).textContent='⚠ No se pudo traducir';
+    const d = await res.json();
+    const tr = d?.responseData?.translatedText;
+
+    if (d.responseStatus===200 && tr && tr.trim()) {
+      // FIX E: decodificar entidades HTML (&amp; &quot; &#39; etc.)
+      const decoded = decodeEntities(tr.trim());
+      // FIX A: textContent — nunca innerHTML con datos de API externa
+      $('tl-'+dstP).textContent = decoded;
+      setSt(dstP, str(dstP,'ok'), true);
+      setTimeout(()=>setSt(dstP,'',false), 2000);
+      // FIX A+C: optional chaining en speech
+      doSpeak(decoded, state[dstP]?.speech || 'en-US');
+    } else if (tr && tr.includes('MYMEMORY WARNING')) {
+      // FIX C: mensaje específico cuando se agota la cuota diaria
+      $('tl-'+dstP).textContent = '⚠ Límite diario de traducción alcanzado';
+      setSt(dstP,'',false);
+    } else {
+      $('tl-'+dstP).textContent = '⚠ No se pudo traducir';
       setSt(dstP,'',false);
     }
-  }catch(e){
-    if(e.name==='AbortError')return;
-    $('tl-'+dstP).textContent=str(dstP,'er');
+  } catch(e) {
+    if (e.name==='AbortError') return;
+    $('tl-'+dstP).textContent = str(dstP,'er');
     setSt(dstP,'',false);
-  }finally{fctl=null;}
+  } finally {
+    fctl = null;
+  }
 }
 
-// ── VOZ ────────────────────────────────────────────────────────────────────────
-let voicesOk=false;
-if(window.speechSynthesis){
-  if(speechSynthesis.getVoices().length)voicesOk=true;
-  else speechSynthesis.onvoiceschanged=()=>voicesOk=true;
-}
-function doSpeak(text,lang){
-  if(!window.speechSynthesis)return;
+// ── SÍNTESIS DE VOZ ────────────────────────────────────────────────────────────
+// FIX D+F: obtener voces en el momento exacto, buscar coincidencia exacta primero
+function doSpeak(text, lang) {
+  if (!window.speechSynthesis) return;
   speechSynthesis.cancel();
-  const go=()=>{const u=new SpeechSynthesisUtterance(text);u.lang=lang;u.rate=0.92;speechSynthesis.speak(u);};
-  setTimeout(()=>voicesOk?go():setTimeout(go,400),50);
+
+  function go() {
+    const voices = speechSynthesis.getVoices();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang;
+    u.rate = 0.92;
+    if (voices.length > 0) {
+      // FIX D: buscar coincidencia exacta primero, luego parcial
+      const exact   = voices.find(v => v.lang === lang);
+      const partial = voices.find(v => v.lang.startsWith(lang.split('-')[0]));
+      if (exact)        u.voice = exact;
+      else if (partial) u.voice = partial;
+    }
+    speechSynthesis.speak(u);
+  }
+
+  // FIX D: no mutar onvoiceschanged global — usar promesa con timeout
+  const voices = speechSynthesis.getVoices();
+  if (voices.length > 0) {
+    setTimeout(go, 50);
+  } else {
+    // Esperar con polling en lugar de mutar onvoiceschanged
+    let attempts = 0;
+    const poll = setInterval(() => {
+      attempts++;
+      if (speechSynthesis.getVoices().length > 0 || attempts > 20) {
+        clearInterval(poll);
+        go();
+      }
+    }, 100);
+  }
 }
 
 // ── INIT ───────────────────────────────────────────────────────────────────────
-bindBtn('m');bindBtn('c');setLbls('m');setLbls('c');
-document.addEventListener('contextmenu',e=>e.preventDefault());
+bindBtn('m');
+bindBtn('c');
+setLbls('m');
+setLbls('c');
+document.addEventListener('contextmenu', e=>e.preventDefault());
 </script>
 </body>
 </html>
